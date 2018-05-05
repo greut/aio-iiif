@@ -20,4 +20,4 @@ $ pipenv shell
 (aio-iiif) $ python -m iiif
 ```
 
-And then visit <http://localhost:8080/http://www.acprail.com/images/stories/maps/Swiss_map.jpg/0/default.jpg>.
+And then visit <http://localhost:8080/http://www.acprail.com/images/stories/maps/Swiss_map.jpg/max/0/default.jpg>.

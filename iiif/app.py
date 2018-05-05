@@ -7,14 +7,16 @@ from aiohttp import ClientSession
 from aiohttp.web import (Application, HTTPBadRequest, Request, StreamResponse,
                          get)
 
+# Missing size
 # Missing rotation: arbitrary angle
 # Missing quality: bitonal (B_W) still is gray
 # Missing format: pdf
-_re_url = re.compile(r"(?P<identifier>.+)/"
-                     r"(?P<mirroring>!?)(?P<rotation>(0|90|180|270))/"
-                     r"(?P<quality>(default|color|gray|bitonal))\."
-                     r"(?P<format>(jpg|png|tif|gif|jp2|webp))$")
-
+_re_url = re.compile(
+    r"(?P<identifier>.+)/"
+    r"(?P<size>(full|max|\d+,|,\d+|pct:\d+|!\d+,\d+|\d+,\d+))/"
+    r"(?P<mirroring>!?)(?P<rotation>(0|90|180|270))/"
+    r"(?P<quality>(default|color|gray|bitonal))\."
+    r"(?P<format>(jpg|png|tif|gif|jp2|webp))$")
 
 _colourspaces = {
     "gray": pyvips.Interpretation.GREY16,
@@ -44,6 +46,7 @@ async def image(request: Request):
     if not match:
         return HTTPBadRequest()
 
+    size = match.group("size")
     identifier = match.group("identifier")
     mirroring = match.group("mirroring") == "!"
     rotation = int(match.group("rotation"))
@@ -60,6 +63,37 @@ async def image(request: Request):
             await sresp.prepare(request)
             # Via pyvips
             image = pyvips.Image.new_from_buffer(await resp.read(), "")
+
+            # XXX allow usage of shrink on load
+            # XXX use affine/reduce/resize
+            if size not in ("full", "max"):
+                if size.startswith("pct:"):
+                    pct = int(size[4:])
+                    if 0 < pct <= 100:
+                        image = image.resize(100. / pct)
+                    else:
+                        return HTTPBadRequest()
+                else:
+                    width, height = (image.width, image.height)
+                    confined = False
+                    if size.startswith("!"):
+                        confined = True
+                        size = size[1:]
+                    w, h = (int(x) for x in size.split(",", 2))
+                    if w:
+                        wshrink = max(1., width / float(w))
+                    if h:
+                        hshrink = max(1., height / float(h))
+
+                    if w and h:
+                        if confined:
+                            image = image.shrink(wshrink, hshrink)
+                        else:
+                            image = image.resize(min(1 / wshrink, 1 / hshrink))
+                    elif w:
+                        image = image.shrinkh(wshrink)
+                    else:
+                        image = image.shrinkv(hshrink)
 
             if mirroring:
                 image = image.fliphor()
