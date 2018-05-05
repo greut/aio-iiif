@@ -7,15 +7,16 @@ from aiohttp import ClientSession
 from aiohttp.web import (Application, HTTPBadRequest, Request, StreamResponse,
                          get)
 
-# Missing size
 # Missing rotation: arbitrary angle
-# Missing quality: bitonal (B_W) still is gray
+# Missing quality: bitonal (B_W) is gray still
+# Extra quality: 0-100 for JPEG quality, default to 75
 # Missing format: pdf
 _re_url = re.compile(
     r"(?P<identifier>.+)/"
+    r"(?P<region>(full|square|(pct:)?\d+,\d+,\d+,\d+))/"
     r"(?P<size>(full|max|\d+,|,\d+|pct:\d+|!\d+,\d+|\d+,\d+))/"
     r"(?P<mirroring>!?)(?P<rotation>(0|90|180|270))/"
-    r"(?P<quality>(default|color|gray|bitonal))\."
+    r"(?P<quality>(default|color|gray|bitonal|\d+))\."
     r"(?P<format>(jpg|png|tif|gif|jp2|webp))$")
 
 _colourspaces = {
@@ -46,6 +47,7 @@ async def image(request: Request):
     if not match:
         return HTTPBadRequest()
 
+    region = match.group("region")
     size = match.group("size")
     identifier = match.group("identifier")
     mirroring = match.group("mirroring") == "!"
@@ -61,8 +63,32 @@ async def image(request: Request):
                 reason=resp.reason,
                 headers={"Content-Type": _content_types[format]})
             await sresp.prepare(request)
+
             # Via pyvips
             image = pyvips.Image.new_from_buffer(await resp.read(), "")
+
+            if region != "full":
+                width, height = (image.width, image.height)
+                l, t, w, h = 0, 0, width, height
+                if region == "square":
+                    if width < height:
+                        h = width
+                        t = (height - width) / 2
+                    else:
+                        w = height
+                        l = (width - height) / 2
+                else:
+                    pct = region.startswith("pct:")
+                    if pct:
+                        region = region[4:]
+                    l, t, w, h = (int(x) for x in region.split(",", 4))
+                    if pct:
+                        l = (l * width) / 100
+                        t = (t * height) / 100
+                        w = (w * width) / 100
+                        h = (h * height) / 100
+
+                image = image.extract_area(l, t, w, h)
 
             # XXX allow usage of shrink on load
             # XXX use affine/reduce/resize
@@ -106,14 +132,18 @@ async def image(request: Request):
                 image = image.colourspace(colourspace)
 
             property = ""
+            q = 75
+            if int(quality):
+                q = max(1, min(100, int(quality)))
+
             if format == "jpg":
-                property = "[Q=95]"
+                property = f"[Q={quality}]"
             buf = image.write_to_buffer(f'.{format}{property}')
 
             await sresp.write(buf)
             return sresp
 
-            # Do nothing
+            # XXX Do nothing if pyvips should be involved
             blob = await resp.content.read()
             while blob:
                 try:
