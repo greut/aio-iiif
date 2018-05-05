@@ -153,7 +153,8 @@ async def image_request(request: Request, *, identifier: str, region: str, size:
                 if size.startswith("!"):
                     confined = True
                     size = size[1:]
-                w, h = (int(x) for x in size.split(",", 2))
+                w, h = (int(x) if x.isdigit() else 0
+                        for x in size.split(",", 2))
                 if w:
                     wshrink = max(1., width / float(w))
                 if h:
@@ -165,9 +166,9 @@ async def image_request(request: Request, *, identifier: str, region: str, size:
                     else:
                         image = image.resize(min(1 / wshrink, 1 / hshrink))
                 elif w:
-                    image = image.shrinkh(wshrink)
+                    image = image.shrink(wshrink, wshrink)
                 else:
-                    image = image.shrinkv(hshrink)
+                    image = image.shrink(hshrink, hshrink)
 
         if mirroring:
             image = image.fliphor()
@@ -179,13 +180,13 @@ async def image_request(request: Request, *, identifier: str, region: str, size:
         if colourspace:
             image = image.colourspace(colourspace)
 
-        property = ""
         q = 75
-        if int(quality):
+        if quality.isdigit():
             q = max(1, min(100, int(quality)))
 
+        property = ""
         if format == "jpg":
-            property = f"[Q={quality}]"
+            property = f"[Q={q}]"
         buf = image.write_to_buffer(f'.{format}{property}')
 
         return Response(
@@ -225,6 +226,7 @@ async def image(request: Request):
 def make_app():
     app = Application()
     app.add_routes([get('/', index), get(r'/{query:https?:/.+}', image)])
+    app.router.add_static('/', path='static')
 
     aiohttp_jinja2.setup(app, loader=jinja2.PackageLoader('iiif', 'templates'))
 
