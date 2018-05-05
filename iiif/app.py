@@ -7,11 +7,14 @@ from aiohttp import ClientSession
 from aiohttp.web import (Application, HTTPBadRequest, Request, StreamResponse,
                          get)
 
+# Missing rotation: arbitrary angle
 # Missing quality: bitonal (B_W) still is gray
 # Missing format: pdf
 _re_url = re.compile(r"(?P<identifier>.+)/"
+                     r"(?P<mirroring>!?)(?P<rotation>(0|90|180|270))/"
                      r"(?P<quality>(default|color|gray|bitonal))\."
                      r"(?P<format>(jpg|png|tif|gif|jp2|webp))$")
+
 
 _colourspaces = {
     "gray": pyvips.Interpretation.GREY16,
@@ -42,6 +45,8 @@ async def image(request: Request):
         return HTTPBadRequest()
 
     identifier = match.group("identifier")
+    mirroring = match.group("mirroring") == "!"
+    rotation = int(match.group("rotation"))
     quality = match.group("quality")
     format = match.group("format")
 
@@ -55,6 +60,12 @@ async def image(request: Request):
             await sresp.prepare(request)
             # Via pyvips
             image = pyvips.Image.new_from_buffer(await resp.read(), "")
+
+            if mirroring:
+                image = image.fliphor()
+
+            if rotation > 0:
+                image = image.rot(f"d{rotation}")
 
             colourspace = _colourspaces.get(quality)
             if colourspace:
