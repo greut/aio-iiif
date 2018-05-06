@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang=en>
+    <head>
+        <meta charset=utf-8>
+        <title>OpenSeadragon</title>
+        <style>
+.openseadragon
+{
+    height:     90vh;
+    color:      #333; /* text color for messages */
+    background-color: #f0f0f0;
+}
+.openseadragon-small
+{
+    height:     80vh;
+    color:      #333; /* text color for messages */
+}
+        </style>
+    </head>
+    <body>
+        <div id="zoom" class="openseadragon"></div>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/2.3.1/openseadragon.min.js"></script>
+        <script>
+OpenSeadragon({
+    id: "zoom",
+    prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/2.3.1/images/",
+    sequenceMode: true,
+    tileSources: [
+        "http://localhost:8080/http://localhost:8080/images/Swiss_map.jpg/info.json"
+    ]
+})
+        </script>
+        <p>
+            <a href="/">Back</a> |
+            Powered by <a href="https://openseadragon.github.io/">OpenSeadragon</a>.
+        </p>
+    </body>
+</html>
