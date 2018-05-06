@@ -9,6 +9,7 @@ aiohttp = "*"
 cchardet = "*"
 aiodns = "*"
 "aiohttp-jinja2" = "*"
+async-lru = "*"
 
 [dev-packages]
 "flake8" = "*"

@@ -3,10 +3,10 @@ import re
 import aiohttp_jinja2
 import jinja2
 import pyvips
-from yarl import URL
-from aiohttp import ClientSession, ClientRequest
-from aiohttp.web import (Application, HTTPBadRequest, Request, Response,
-        StreamResponse, json_response, get)
+from aiohttp import ClientSession
+from aiohttp.web import (Application, HTTPBadRequest, Request, Response, get,
+                         json_response)
+from async_lru import alru_cache
 
 # Missing rotation: arbitrary angle
 # Missing quality: bitonal (B_W) is gray still
@@ -14,7 +14,8 @@ from aiohttp.web import (Application, HTTPBadRequest, Request, Response,
 # Missing format: pdf
 _re_image_request = re.compile(
     r"(?P<identifier>.+)/"
-    r"(?P<region>(full|square|\d+,\d+,\d+,\d+|pct:\d+(\.\d*)?,\d+(\.\d*)?,\d+(\.\d*)?,\d+(\.\d*)?))/"
+    r"(?P<region>(full|square|\d+,\d+,\d+,\d+|"
+    r"pct:\d+(\.\d*)?,\d+(\.\d*)?,\d+(\.\d*)?,\d+(\.\d*)?))/"
     r"(?P<size>(full|max|\d+,|,\d+|pct:\d+(\.\d*)?|!\d+,\d+|\d+,\d+))/"
     r"(?P<rotation>!?(0|90|180|270))/"
     r"(?P<quality>(default|native|color|gray|bitonal|\d+))\."
@@ -42,6 +43,15 @@ _content_types = {
 async def index(request: Request):
     return {}
 
+
+@alru_cache()
+async def fetch(identifier: str):
+    async with ClientSession() as session:
+        async with session.get(identifier) as resp:
+            resp.raise_for_status()
+            return await resp.read()
+
+
 def info(body):
     image = pyvips.Image.new_from_buffer(body, "")
 
@@ -58,28 +68,28 @@ def resize(body, region, size, rotation, quality, format):
 
     if region != "full":
         width, height = (image.width, image.height)
-        l, t, w, h = 0, 0, width, height
+        left, top, w, h = 0, 0, width, height
         if region == "square":
             if width < height:
                 h = width
-                t = (height - width) / 2
+                top = (height - width) / 2
             else:
                 w = height
-                l = (width - height) / 2
+                left = (width - height) / 2
         else:
             pct = region.startswith("pct:")
             klass = int
             if pct:
                 klass = float
                 region = region[4:]
-            l, t, w, h = (klass(x) for x in region.split(",", 4))
+            left, top, w, h = (klass(x) for x in region.split(",", 4))
             if pct:
-                l = (l * width) / 100
-                t = (t * height) / 100
+                left = (left * width) / 100
+                top = (top * height) / 100
                 w = (w * width) / 100
                 h = (h * height) / 100
 
-        image = image.extract_area(l, t, w, h)
+        image = image.extract_area(left, top, w, h)
 
     # XXX allow usage of shrink on load
     # XXX use affine/reduce/resize
@@ -96,8 +106,7 @@ def resize(body, region, size, rotation, quality, format):
             if size.startswith("!"):
                 confined = True
                 size = size[1:]
-            w, h = (int(x) if x.isdigit() else 0
-                    for x in size.split(",", 2))
+            w, h = (int(x) if x.isdigit() else 0 for x in size.split(",", 2))
             if w:
                 wshrink = max(1., width / float(w))
             if h:
@@ -135,30 +144,32 @@ def resize(body, region, size, rotation, quality, format):
 
 
 async def image_information(request: Request, *, identifier: str):
-    async with ClientSession() as session:
-        async with session.get(identifier) as resp:
-            resp.raise_for_status()
-            body = await resp.read()
-
-    width, height = await request.loop.run_in_executor(
-            None,
-            info, body)
+    body = await fetch(identifier)
+    width, height = await request.loop.run_in_executor(None, info, body)
     return json_response({
-        "@context": "http://iiif.io/api/image/2/context.json",
-        "@id": f"{request.url.scheme}://{request.url.host}:{request.url.port}/{identifier}",
-        "type": "iiif:Image",
-        "protocol": "http://iiif.io/api/image",
+        "@context":
+        "http://iiif.io/api/image/2/context.json",
+        "@id":
+        f"{request.url.scheme}://{request.url.host}:{request.url.port}/"
+        f"{identifier}",
+        "type":
+        "iiif:Image",
+        "protocol":
+        "http://iiif.io/api/image",
         "tiles": [{
-            "scaleFactors": [1,2,4,8,16,32],
-            "width": 1024,
+            "scaleFactors": [1, 2, 4, 8, 16, 32],
+            "width": width,
         }],
-        "width": width,
-        "height": height,
+        "width":
+        width,
+        "height":
+        height,
         "profile": [
-            "http://iiif.io/api/image/2/level2.json",
-            {
-                "@context": "http://iiif.io/api/image/2/context.json",
-                "type": "iiif:ImageProfile",
+            "http://iiif.io/api/image/2/level2.json", {
+                "@context":
+                "http://iiif.io/api/image/2/context.json",
+                "type":
+                "iiif:ImageProfile",
                 "formats": ["jpg", "png", "tif", "webp"],
                 "qualities": ["default", "gray"],
                 "supports": [
@@ -179,20 +190,18 @@ async def image_information(request: Request, *, identifier: str):
         ]
     })
 
-async def image_request(request: Request, *, identifier: str, region: str, size: str, rotation: str, quality: str, format: str):
 
-    async with ClientSession() as session:
-        async with session.get(identifier) as resp:
-            resp.raise_for_status()
-            body = await resp.read()
+async def image_request(request: Request, *, identifier: str, region: str,
+                        size: str, rotation: str, quality: str, format: str):
 
-    resp = await request.loop.run_in_executor(
-            None,
-            resize, body, region, size, rotation, quality, format)
+    body = await fetch(identifier)
+
+    resp = await request.loop.run_in_executor(None, resize, body, region, size,
+                                              rotation, quality, format)
 
     return Response(
-        body=resp,
-        headers={"Content-Type": _content_types[format]})
+        body=resp, headers={"Content-Type": _content_types[format]})
+
 
 async def image(request: Request):
     query = request.match_info.get('query')
