@@ -38,177 +38,155 @@ _content_types = {
 }
 
 
-class AsyncDownload:
-    def __init__(self, url):
-        self.url = URL(url)
-
-    def __enter__(self):
-        raise TypeError("Use async instead")
-
-    def __exit__(self, *exc_details):
-        pass
-
-    async def __aenter__(self):
-        self.session = ClientSession()
-        self.response = await self.session._request("GET", self.url)
-        return self.response
-
-    async def __aexit__(self, *exc_details):
-        await self.response.release()
-        await self.session.close()
-
-
 @aiohttp_jinja2.template('index.html')
 async def index(request: Request):
     return {}
 
+def info(body):
+    image = pyvips.Image.new_from_buffer(body, "")
 
-async def image_information(request: Request, *, identifier: str):
-    async with AsyncDownload(identifier) as resp:
-        resp.raise_for_status()
-
-        # Via pyvips
-        image = pyvips.Image.new_from_buffer(await resp.read(), "")
-
-        return json_response({
-            "context": "http://iiif.io/api/image/2/context.json",
-            "id": f"{request.url.scheme}://{request.url.host}:{request.url.port}/{identifier}",
-            "type": "iiif:Image",
-            "protocol": "http://iiif.io/api.image",
-            "width": image.width,
-            "height": image.height,
-            "profile": [
-                "http://iiif.io/api/image/2/level2.json",
-                {
-                    "context": "http://iiif.io/api/image/2/context.json",
-                    "type": "iiif:ImageProfile",
-                    "formats": ["jpg", "png", "tif", "webp"],
-                    "qualities": ["default", "gray"],
-                    "supports": [
-                        "jsonldMediaType",
-                        "mirroring",
-                        "regionByPct",
-                        "regionByPx",
-                        "regionSquare",
-                        "rotationBy90s",
-                        "sizeByConfinedWh",
-                        "sizeByDistortedWh",
-                        "sizeByH",
-                        "sizeByPct",
-                        "sizeByW",
-                        "sizeByWh",
-                    ]
-                }
-            ]
-        })
+    return (image.width, image.height)
 
 
-async def image_request(request: Request, *, identifier: str, region: str, size: str, rotation: str, quality: str, format: str):
+def resize(body, region, size, rotation, quality, format):
+    image = pyvips.Image.new_from_buffer(body, "")
+
     mirroring = rotation.startswith("!")
     if mirroring:
         rotation = rotation[1:]
     rotation = int(rotation)
 
-    async with AsyncDownload(identifier) as resp:
-        resp.raise_for_status()
+    if region != "full":
+        width, height = (image.width, image.height)
+        l, t, w, h = 0, 0, width, height
+        if region == "square":
+            if width < height:
+                h = width
+                t = (height - width) / 2
+            else:
+                w = height
+                l = (width - height) / 2
+        else:
+            pct = region.startswith("pct:")
+            if pct:
+                region = region[4:]
+            l, t, w, h = (int(x) for x in region.split(",", 4))
+            if pct:
+                l = (l * width) / 100
+                t = (t * height) / 100
+                w = (w * width) / 100
+                h = (h * height) / 100
 
-        # Via pyvips
-        image = pyvips.Image.new_from_buffer(await resp.read(), "")
+        image = image.extract_area(l, t, w, h)
 
-        if region != "full":
+    # XXX allow usage of shrink on load
+    # XXX use affine/reduce/resize
+    if size not in ("full", "max"):
+        if size.startswith("pct:"):
+            pct = int(size[4:])
+            if 0 < pct <= 100:
+                image = image.resize(100. / pct)
+            else:
+                return HTTPBadRequest()
+        else:
             width, height = (image.width, image.height)
-            l, t, w, h = 0, 0, width, height
-            if region == "square":
-                if width < height:
-                    h = width
-                    t = (height - width) / 2
+            confined = False
+            if size.startswith("!"):
+                confined = True
+                size = size[1:]
+            w, h = (int(x) if x.isdigit() else 0
+                    for x in size.split(",", 2))
+            if w:
+                wshrink = max(1., width / float(w))
+            if h:
+                hshrink = max(1., height / float(h))
+
+            if w and h:
+                if confined:
+                    image = image.shrink(wshrink, hshrink)
                 else:
-                    w = height
-                    l = (width - height) / 2
+                    image = image.resize(min(1 / wshrink, 1 / hshrink))
+            elif w:
+                image = image.shrink(wshrink, wshrink)
             else:
-                pct = region.startswith("pct:")
-                if pct:
-                    region = region[4:]
-                l, t, w, h = (int(x) for x in region.split(",", 4))
-                if pct:
-                    l = (l * width) / 100
-                    t = (t * height) / 100
-                    w = (w * width) / 100
-                    h = (h * height) / 100
+                image = image.shrink(hshrink, hshrink)
 
-            image = image.extract_area(l, t, w, h)
+    if mirroring:
+        image = image.fliphor()
 
-        # XXX allow usage of shrink on load
-        # XXX use affine/reduce/resize
-        if size not in ("full", "max"):
-            if size.startswith("pct:"):
-                pct = int(size[4:])
-                if 0 < pct <= 100:
-                    image = image.resize(100. / pct)
-                else:
-                    return HTTPBadRequest()
-            else:
-                width, height = (image.width, image.height)
-                confined = False
-                if size.startswith("!"):
-                    confined = True
-                    size = size[1:]
-                w, h = (int(x) if x.isdigit() else 0
-                        for x in size.split(",", 2))
-                if w:
-                    wshrink = max(1., width / float(w))
-                if h:
-                    hshrink = max(1., height / float(h))
+    if rotation > 0:
+        image = image.rot(f"d{rotation}")
 
-                if w and h:
-                    if confined:
-                        image = image.shrink(wshrink, hshrink)
-                    else:
-                        image = image.resize(min(1 / wshrink, 1 / hshrink))
-                elif w:
-                    image = image.shrink(wshrink, wshrink)
-                else:
-                    image = image.shrink(hshrink, hshrink)
+    colourspace = _colourspaces.get(quality)
+    if colourspace:
+        image = image.colourspace(colourspace)
 
-        if mirroring:
-            image = image.fliphor()
+    q = 75
+    if quality.isdigit():
+        q = max(1, min(100, int(quality)))
 
-        if rotation > 0:
-            image = image.rot(f"d{rotation}")
+    property = ""
+    if format == "jpg":
+        property = f"[Q={q}]"
 
-        colourspace = _colourspaces.get(quality)
-        if colourspace:
-            image = image.colourspace(colourspace)
+    return image.write_to_buffer(f'.{format}{property}')
 
-        q = 75
-        if quality.isdigit():
-            q = max(1, min(100, int(quality)))
 
-        property = ""
-        if format == "jpg":
-            property = f"[Q={q}]"
-        buf = image.write_to_buffer(f'.{format}{property}')
+async def image_information(request: Request, *, identifier: str):
+    async with ClientSession() as session:
+        async with session.get(identifier) as resp:
+            resp.raise_for_status()
+            body = await resp.read()
 
-        return Response(
-            body=buf,
-            headers={"Content-Type": _content_types[format]})
+    width, height = await request.loop.run_in_executor(
+            None,
+            info, body)
+    return json_response({
+    "context": "http://iiif.io/api/image/2/context.json",
+"id": f"{request.url.scheme}://{request.url.host}:{request.url.port}/{identifier}",
+        "type": "iiif:Image",
+        "protocol": "http://iiif.io/api.image",
+        "width": width,
+        "height": height,
+        "profile": [
+            "http://iiif.io/api/image/2/level2.json",
+            {
+                "context": "http://iiif.io/api/image/2/context.json",
+                "type": "iiif:ImageProfile",
+                "formats": ["jpg", "png", "tif", "webp"],
+                "qualities": ["default", "gray"],
+                "supports": [
+                    "jsonldMediaType",
+                    "mirroring",
+                    "regionByPct",
+                    "regionByPx",
+                    "regionSquare",
+                    "rotationBy90s",
+                    "sizeByConfinedWh",
+                    "sizeByDistortedWh",
+                    "sizeByH",
+                    "sizeByPct",
+                    "sizeByW",
+                    "sizeByWh",
+                ]
+            }
+        ]
+    })
 
-        # XXX Do nothing if pyvips should be involved
-        sresp = StreamResponse(
-            headers={"Content-Type": _content_types[format]})
-        await sresp.prepare(request)
+async def image_request(request: Request, *, identifier: str, region: str, size: str, rotation: str, quality: str, format: str):
 
-        blob = await resp.content.read()
-        while blob:
-            try:
-                await sresp.write(blob)
-                await sresp.drain()
-            except Exception as e:
-                break
-            blob = await resp.content.read()
+    async with ClientSession() as session:
+        async with session.get(identifier) as resp:
+            resp.raise_for_status()
+            body = await resp.read()
 
-        return sresp
+    resp = await request.loop.run_in_executor(
+            None,
+            resize, body, region, size, rotation, quality, format)
 
+    return Response(
+        body=resp,
+        headers={"Content-Type": _content_types[format]})
 
 async def image(request: Request):
     query = request.match_info.get('query')
