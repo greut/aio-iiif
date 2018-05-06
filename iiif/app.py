@@ -14,10 +14,10 @@ from aiohttp.web import (Application, HTTPBadRequest, Request, Response,
 # Missing format: pdf
 _re_image_request = re.compile(
     r"(?P<identifier>.+)/"
-    r"(?P<region>(full|square|(pct:)?\d+,\d+,\d+,\d+))/"
-    r"(?P<size>(full|max|\d+,|,\d+|pct:\d+|!\d+,\d+|\d+,\d+))/"
+    r"(?P<region>(full|square|\d+,\d+,\d+,\d+|pct:\d+(\.\d*)?,\d+(\.\d*)?,\d+(\.\d*)?,\d+(\.\d*)?))/"
+    r"(?P<size>(full|max|\d+,|,\d+|pct:\d+(\.\d*)?|!\d+,\d+|\d+,\d+))/"
     r"(?P<rotation>!?(0|90|180|270))/"
-    r"(?P<quality>(default|color|gray|bitonal|\d+))\."
+    r"(?P<quality>(default|native|color|gray|bitonal|\d+))\."
     r"(?P<format>(jpg|png|tif|gif|jp2|webp))$")
 
 _re_image_information = re.compile(r"(?P<identifier>.+)/info.json")
@@ -68,9 +68,11 @@ def resize(body, region, size, rotation, quality, format):
                 l = (width - height) / 2
         else:
             pct = region.startswith("pct:")
+            klass = int
             if pct:
+                klass = float
                 region = region[4:]
-            l, t, w, h = (int(x) for x in region.split(",", 4))
+            l, t, w, h = (klass(x) for x in region.split(",", 4))
             if pct:
                 l = (l * width) / 100
                 t = (t * height) / 100
@@ -83,9 +85,9 @@ def resize(body, region, size, rotation, quality, format):
     # XXX use affine/reduce/resize
     if size not in ("full", "max"):
         if size.startswith("pct:"):
-            pct = int(size[4:])
+            pct = float(size[4:])
             if 0 < pct <= 100:
-                image = image.resize(100. / pct)
+                image = image.shrink(100. / pct, 100. / pct)
             else:
                 return HTTPBadRequest()
         else:
