@@ -144,16 +144,20 @@ async def image_information(request: Request, *, identifier: str):
             None,
             info, body)
     return json_response({
-    "context": "http://iiif.io/api/image/2/context.json",
-"id": f"{request.url.scheme}://{request.url.host}:{request.url.port}/{identifier}",
+        "@context": "http://iiif.io/api/image/2/context.json",
+        "@id": f"{request.url.scheme}://{request.url.host}:{request.url.port}/{identifier}",
         "type": "iiif:Image",
-        "protocol": "http://iiif.io/api.image",
+        "protocol": "http://iiif.io/api/image",
+        "tiles": [{
+            "scaleFactors": [1,2,4,8,16,32],
+            "width": 1024,
+        }],
         "width": width,
         "height": height,
         "profile": [
             "http://iiif.io/api/image/2/level2.json",
             {
-                "context": "http://iiif.io/api/image/2/context.json",
+                "@context": "http://iiif.io/api/image/2/context.json",
                 "type": "iiif:ImageProfile",
                 "formats": ["jpg", "png", "tif", "webp"],
                 "qualities": ["default", "gray"],
